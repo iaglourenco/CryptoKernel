@@ -635,16 +635,12 @@ struct skcipher_def {
 char *key,*iv,*tempIv,*tempKey;
 char *ivC = "0123456789ABCDEF";
 char *keyC = "0123456789ABCDEF"; //Guarda o array de strings recebidos do usuario
-//static char cryptokey[32];
-//static char cryptoiv[32];
 
 static DEFINE_MUTEX(crypto_mutex);
 static int tamInput;
 static char *encrypted;
 static int tamSaida; 
 static char *decrypted;
-//static int tamSaida;
-//static int tamSaida;
 static char *ivLocal;
 int pos,i;
 char op;
@@ -663,28 +659,24 @@ static void ascii2hexa(unsigned char *in, char *out, int len);
 static int unpadding(char *string, int len);
 static void padding(char *string, int len);
 
-int converteASCII(char *string, char *ascii){ 
-
-	printk("Iniciou Converte ASCII... \n");
-
-    char temp[2];
+int converteASCII(char *string, char *ascii)
+{
+	char temp[2];
     int i;    
     int cont = 0;
     int tam = strlen(string);
-    for(i = 0; i < tam; i+=2){         
+    for(i = 0; i < tam; i+=2)
+	{         
         temp[0]  = string[i];
         temp[1]  = string[i+1];
         sscanf(temp, "%hhx", &ascii[cont]);
         cont++;    
    }
-   printk("Terminou Converte ASCII... \n");
    return 1;
 }
 
-static ssize_t inicio_cripto(const char *buffer,size_t len){
-
-	printk("Iniciou inicio_cripto... \n");
-
+static ssize_t inicio_cripto(const char *buffer,size_t len)
+{
     char temp[2];
     char *ascii;
     char *input;    
@@ -692,143 +684,151 @@ static ssize_t inicio_cripto(const char *buffer,size_t len){
     char blocoCrypto[16]={0};
     int cont = 0, indice;
 
-	printk("P.A. 1 - inicio_cripto... \n");
     op = buffer[0];
     tamInput = len - 1;
-    if(tamInput%32 && op == 'd') return -1;//Caso a entrada nao seja multiplo de 32, retorna erro
+    if(tamInput%32 && op == 'd') return -1;					//Caso a entrada nao seja multiplo de 32, retorna erro
 
-	printk("P.A. 2 - inicio_cripto... \n") ; 
-    if(!(tamInput % 16)){
+    if(!(tamInput % 16))
+	{
         input = vmalloc(tamInput + 32);
-    }else{
+    }
+	else
+	{
         input = vmalloc(tamInput);    
     }
 
-	printk("P.A. 3 - inicio_cripto... \n");
-    if(!input){
+    if(!input)
+	{
         printk(KERN_ERR "kmalloc(input) failed\n");
         return -ENOMEM;
     }
 
-	printk("P.A. 4 - inicio_cripto... \n");
     if(!(tamInput % 16))
-        ascii = vmalloc(tamInput/2 + 16);
+	{
+		ascii = vmalloc(tamInput/2 + 16);
+	}  
     else
-        ascii = vmalloc(tamInput/2);
-    if (!ascii) {
+	{
+		ascii = vmalloc(tamInput/2);
+	}
+        
+    if (!ascii) 
+	{
         printk(KERN_ERR  "kmalloc(ascii) failed\n");
         return -ENOMEM;
     }
 
-	printk("P.A. 5 - inicio_cripto... \n");
     ivLocal = vmalloc(16);
-    if (!ivLocal) {
+	if (!ivLocal) 
+	{
         printk(KERN_ERR  "kmalloc(input) failed\n");
         return -ENOMEM;
     }    
 
-	printk("P.A. 6 - inicio_cripto... \n");
     memcpy(ivLocal, ivC, 16);
     memcpy(input, buffer+1,tamInput);
 
-	printk("P.A. 7 - inicio_cripto... \n");
-    if(op == 'c') {
-        padding(input, tamInput); //Caso a opcao seja de criptgrafia, o padding eh feito na entrada.
-        tamInput += 32 - (tamInput%32); //Atualiza o tamanho do texto apos o padding    
+    if(op == 'c') 
+	{
+        padding(input, tamInput); 							//Caso a opcao seja de criptgrafia, o padding eh feito na entrada.
+        tamInput += 32 - (tamInput%32); 					//Atualiza o tamanho do texto apos o padding    
     } 
    
-   printk("P.A. 8 - inicio_cripto... \n");
     //Conversao de hexa para ascii
-    for(indice = 0; indice < tamInput; indice+=2){
+    for(indice = 0; indice < tamInput; indice+=2)
+	{
         temp[0]  = input[indice];
         temp[1]  = input[indice+1];
         sscanf(temp, "%hhx", &ascii[cont]);
         cont++;    
     }
 
-	printk("P.A. 9 - inicio_cripto... \n");
-    if(op == 'c'){
-		printk("P.A. 10 - inicio_cripto... \n");
+    if(op == 'c')
+	{
         printk("CRYPTO--> Criptografando..\n"); 
-        //Aqui entra a criptografia!
-
-		printk("P.A. 11 - inicio_cripto... \n");
-        for(indice = 0; indice < cont/16; indice++){//Cont tem a qtd de caracteres ascii, sempre multiplo de 16 (padding)            
-            for(i = 0; i < 16; i++){//Copia um bloco para criptografar
-                blocoIn[i] = ascii[indice*16 + i];//Indice*16 para deslocar o bloco (Indice tem o num. do bloco)
+        
+		//Aqui entra a criptografia!
+        for(indice = 0; indice < cont/16; indice++) 		//Cont tem a qtd de caracteres ascii, sempre multiplo de 16 (padding)   
+		{         
+            for(i = 0; i < 16; i++) 						//Copia um bloco para criptografar
+			{
+                blocoIn[i] = ascii[indice*16 + i];			//Indice*16 para deslocar o bloco (Indice tem o num. do bloco)
             }
             init_cifra(blocoIn, blocoCrypto, 1);
-            
-            for(i = 0; i < 16; i++){//Copia um bloco criptografado 
-                ascii[indice*16 +i] = blocoCrypto[i];//Como o bloco atual de ascii ja foi criptografado, ele eh sobrescrito
+            for(i = 0; i < 16; i++)							//Copia um bloco criptografado 
+			{
+                ascii[indice*16 +i] = blocoCrypto[i];		//Como o bloco atual de ascii ja foi criptografado, ele eh sobrescrito
             }
         }
 
-	printk("P.A. 12 - inicio_cripto... \n");
         encrypted=vmalloc(cont*2+1);
-        if(!encrypted){
+        if(!encrypted)
+		{
             printk(KERN_ERR "kmalloc(encrypted) error");
         }
-	printk("P.A. 13 - inicio_cripto... \n");
-        ascii2hexa(ascii, encrypted, cont);//ascii tem todos os blocos criptografados
+
+        ascii2hexa(ascii, encrypted, cont);					//ascii tem todos os blocos criptografados
         tamSaida = cont*2;
         encrypted[cont*2] = '\0';
 
-    }else if(op == 'd'){
-		printk("P.A. ERRO - inicio_cripto... \n");
-        if(tamInput%32) return -1;//Caso a entrada nao seja multiplo de 32, retorna erro
+    }
+	else if(op == 'd')
+	{
+        if(tamInput%32) return -1;							//Caso a entrada nao seja multiplo de 32, retorna erro
         printk("CRYPTO--> Descriptografando..\n"); 
-        //descriptografia aqui
-
-        for(indice = 0; indice < cont/16; indice++){//Cont tem a qtd de caracteres ascii, sempre multiplo de 16 (padding)            
-            for(i = 0; i < 16; i++){//Copia um bloco para criptografar
-                blocoIn[i] = ascii[indice*16 + i];//Indice*16 para deslocar o bloco (Indice tem o num. do bloco)
+        
+		//descriptografia aqui...
+        for(indice = 0; indice < cont/16; indice++)			//Cont tem a qtd de caracteres ascii, sempre multiplo de 16 (padding)     
+		{       
+            for(i = 0; i < 16; i++)							//Copia um bloco para criptografar
+			{
+                blocoIn[i] = ascii[indice*16 + i];			//Indice*16 para deslocar o bloco (Indice tem o num. do bloco)
             }
 
             init_cifra(blocoIn, blocoCrypto, 2);
             
-            for(i = 0; i < 16; i++){//Copia um bloco criptografado 
-                ascii[indice*16 +i] = blocoCrypto[i];//Como o bloco atual de ascii ja foi criptografado, ele eh sobrescrito
+            for(i = 0; i < 16; i++)							//Copia um bloco criptografado 
+			{
+                ascii[indice*16 +i] = blocoCrypto[i];		//Como o bloco atual de ascii ja foi criptografado, ele eh sobrescrito
             }
         }
 
         decrypted=vmalloc(cont*2);
-        if(!decrypted){
+        if(!decrypted)
+		{
             printk(KERN_ERR "kmalloc(encrypted) error");
         }
 
         ascii2hexa(ascii, decrypted, cont);
         tamSaida=cont*2;
 
-        if(unpadding(decrypted, tamSaida) == 0)//Na descriptografia o unpadding eh feito na saida         
-            return -1;                         //Retorna erro se nao tiver padding valido 
+        if(unpadding(decrypted, tamSaida) == 0)				//Na descriptografia o unpadding eh feito na saida         
+        {
+			return -1;										//Retorna erro se nao tiver padding valido 
+		}                            
 
-       // printk("DEBUG HEX2ASC %s\n", decrypted);
     }
 
-	printk("P.A. 14 - inicio_cripto... \n");
     printk(KERN_INFO "CRYPTO-->  Recebida mensagem com %ld caracteres!\n", len -1);
     vfree(ascii);
     vfree(input);
     vfree(ivLocal);
 
-	printk("Fim inicio_cripto... \n");
     return len;
 }
 
-static void ascii2hexa(unsigned char *in, char *out, int len){
-	printk("Inicio ascii2hexa... \n");
+static void ascii2hexa(unsigned char *in, char *out, int len)
+{
     int i = 0;
-    while (i < len){        
+    while (i < len)
+	{        
         sprintf(out+i*2, "%02x", *in++);
         i++;       
     }
-	printk("FIM ascii2hexa... \n");
 }
 
-static void init_cifra(char *msgInput, char *msgOutput, int opc){
-
-		printk("Inicio init_cifra... \n");
+static void init_cifra(char *msgInput, char *msgOutput, int opc)
+{
 
         /* local variables */
         struct skcipher_request *req ;
@@ -838,185 +838,165 @@ static void init_cifra(char *msgInput, char *msgOutput, int opc){
         char saida[16];
         char entrada[16];
 
-	printk("P.A. 1 - init_cifra... \n");
-
         skcipher = crypto_alloc_skcipher("ecb(aes)", 0, 0);
 
-	printk("P.A. 2 - init_cifra... \n");
-
         req = skcipher_request_alloc(skcipher, GFP_KERNEL);
-        if (req == NULL) {
+        if (req == NULL) 
+		{
                 printk("failed to load transform for aes");
                 goto out;
         }
-	printk("P.A. 3 - init_cifra... \n");
-        ret = crypto_skcipher_setkey(skcipher, keyC, strlen(keyC));
-        if (ret) {
+        
+		ret = crypto_skcipher_setkey(skcipher, keyC, strlen(keyC));
+        if (ret) 
+		{
                 printk(KERN_ERR  "setkey() failed\n");
                 goto out;
         }
-	printk("P.A. 4 - init_cifra... \n");
 
-        skcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG, crypto_req_done, &sk.wait);  
+        skcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG, crypto_req_done, &sk.wait);     
 
-	printk("P.A. 5 - init_cifra... \n");      
-
-        for(i = 0; i < 16; i++){
+        for(i = 0; i < 16; i++)
+		{
             entrada[i] = msgInput[i];
         } 
-
-	printk("P.A. 6 - init_cifra... \n");
 
         sk.tfm = skcipher;
         sk.req = req;
 
-	printk("P.A. 7 - init_cifra... \n");
-
         sg_init_one(&sk.sg[0], entrada, 16);
         sg_init_one(&sk.sg[1], saida, 16);
 
-	printk("P.A. 8 - init_cifra... \n");
+        if(opc == 1)
+		{  
+            skcipher_request_set_crypt(req, &sk.sg[0], &sk.sg[1], 16, NULL);
+            crypto_init_wait(&sk.wait);
+            init_completion(&sk.result.completion);
 
-        if(opc == 1){  
-			printk("P.A. 9 - init_cifra... \n");
-            skcipher_request_set_crypt(req, &sk.sg[0], &sk.sg[1], 16, ivLocal);
-            crypto_init_wait(&sk.wait);
-            init_completion(&sk.result.completion);
-        printk("P.A. 10 - init_cifra... \n");
             ret = crypto_wait_req(crypto_skcipher_encrypt(sk.req), &sk.wait);
-			printk("P.A. 10.1 - init_cifra... \n");
-            if (ret) {
+            if (ret) 
+			{
                 printk(KERN_ERR  "encryption failed erro");
                 goto out;
             }
-			printk("P.A. 11 - init_cifra... \n");
-        }else{
-			printk("P.A. 12 - init_cifra... \n");
-            skcipher_request_set_crypt(req, &sk.sg[0], &sk.sg[1], 16, ivLocal);
+        }
+		else
+		{
+            skcipher_request_set_crypt(req, &sk.sg[0], &sk.sg[1], 16, NULL);
             crypto_init_wait(&sk.wait);
             init_completion(&sk.result.completion);
-        printk("P.A. 13- init_cifra... \n");
-            ret = crypto_wait_req(crypto_skcipher_decrypt(sk.req), &sk.wait);
-			printk("P.A. 14 - init_cifra... \n");
-            if (ret) {
+            
+			ret = crypto_wait_req(crypto_skcipher_decrypt(sk.req), &sk.wait);
+            if (ret)
+			{
                 printk(KERN_ERR  "encryption failed erro");
                 goto out;
             }
-			printk("P.A. 15 - init_cifra... \n");
         }
-printk("P.A. 16 - init_cifra... \n");
-    for(i = 0; i < 16; i++){
+
+    for(i = 0; i < 16; i++)
+	{
         msgOutput[i] = saida[i];
     }
 
-    printk("FIM init_cifra... \n");
 out:
     if (skcipher)
-        crypto_free_skcipher(skcipher);
+	{
+		crypto_free_skcipher(skcipher);
+	}
+        
     if (req)
-        skcipher_request_free(req);       
+	{
+		skcipher_request_free(req);
+	}      
 }
 
 
-static void padding(char *string, int len){ //Padrao utilizado PKCS#7
-
-	printk("Inicio Padding... \n");
+static void padding(char *string, int len)						//Padrao utilizado PKCS#7
+{ 
     int qdtBlocos32, bytesOcupados;
     int i;
-    qdtBlocos32 = len/32;   //Obtem a quantidade de blocos completos
-    bytesOcupados = len%32; //Obtem a quantidade de bytes usados no ultimo bloco
+    qdtBlocos32 = len/32;   									//Obtem a quantidade de blocos completos
+    bytesOcupados = len%32; 									//Obtem a quantidade de bytes usados no ultimo bloco
 
-	printk("P.A. 1 - Padding... \n");
-
-    if(bytesOcupados == 0){ //Caso a string tenha o tamanho multiplo de 16, preenche um novo blco com o num 0x10 (tamanho do bloco)
-        for(i = 0; i < 32; i++){            
-            sprintf(string + qdtBlocos32*32 + i*2,"%02x", 16);//Converte 16 decimal para hexa (0x10)
+    if(bytesOcupados == 0)										//Caso a string tenha o tamanho multiplo de 16, preenche um novo blco com o num 0x10 (tamanho do bloco)
+	{ 
+        for(i = 0; i < 32; i++)
+		{            
+            sprintf(string + qdtBlocos32*32 + i*2,"%02x", 16);	//Converte 16 decimal para hexa (0x10)
         }
     }
-    else {
-        for(i = 0; i < (32 - bytesOcupados); i++){//O ultimo bloco eh preenchido com o valor da qtd de bytes livres
+    else 
+	{
+        for(i = 0; i < (32 - bytesOcupados); i++)				//O ultimo bloco eh preenchido com o valor da qtd de bytes livres
+		{
             sprintf(string + qdtBlocos32*32 + i*2 + bytesOcupados,"%02x", (32 - bytesOcupados)/2);
-         }
+        }
     } 
-
-	printk("FiM Padding... \n");   
+  
 }
 
-static int unpadding(char *string, int len){ //Padrao utilizado PKCS#7
-printk("Inicio unpadding... \n");
+static int unpadding(char *string, int len)						//Padrao utilizado PKCS#7
+{ 
+
     char temp[3];
-    int qtdPadding;//Quantidade de bytes usados no padding
-    int numP;//Numero usado para preencher o padding
+    int qtdPadding;												//Quantidade de bytes usados no padding
+    int numP;													//Numero usado para preencher o padding
     int i;
-printk("P.A 1 - unpadding... \n");
-    temp[0]  = string[len-2];//Ultimo numero sempre eh usado para calcular o padding
+
+    temp[0]  = string[len-2];									//Ultimo numero sempre eh usado para calcular o padding
     temp[1]  = string[len-1];
     temp[2]  = '\0';    
-    sscanf(temp, "%x", &qtdPadding);// Converte o num de hexa para decimal
-printk("P.A 2 - unpadding... \n");
-    for(i = 0; i < qtdPadding*2; i += 2){
+    sscanf(temp, "%x", &qtdPadding);							// Converte o num de hexa para decimal
+
+    for(i = 0; i < qtdPadding*2; i += 2)
+	{
         temp[0]  = string[len - 2 - i];
         temp[1]  = string[len - 1 - i];
         temp[2]  = '\0';
-        sscanf(temp, "%x", &numP);
-        if(numP != qtdPadding){//Caso o numero usado para preencher seja diferente da qtd, retorna erro
+        
+		sscanf(temp, "%x", &numP);
+        if(numP != qtdPadding)									//Caso o numero usado para preencher seja diferente da qtd, retorna erro
+		{
             printk("Erro de padding\n");
             return 0; 
         } 
     }
-	printk("P.A 3 - unpadding... \n");
-    string[len - qtdPadding*2] = '\0';//Descarta numeros usados no padding
-	printk("FIM unpadding... \n");
+
+    string[len - qtdPadding*2] = '\0';							//Descarta numeros usados no padding
     return 1;
 }
 
 ssize_t ksys_write_crypt(unsigned int fd, const char __user *buf, size_t count)
 {
-	printk("FD 3: %i \n", fd);
-	printk("Iniciou ksys_write_crypt \n");
-
 	struct fd f = fdget_pos(fd);
 	ssize_t ret = -EBADF;
 
-	printk("FD 4: %i \n", fd);
-	printk("P.A. 1 - ksys_write_crypt \n");
-
-	if (f.file) {
-		printk("P.A. 2 - ksys_write_crypt \n");
+	if (f.file) 
+	{
 		loff_t pos, *ppos = file_ppos(f.file);
-		printk("P.A. 3 - ksys_write_crypt \n");
-		if (ppos) {
-			printk("P.A. 4 - ksys_write_crypt \n");
+		
+		if (ppos) 
+		{
 			pos = *ppos;
 			ppos = &pos;
-			printk("P.A. 5 - ksys_write_crypt \n");
 		}
-		printk("P.A. 6 - ksys_write_crypt \n");
 		ret = vfs_write(f.file, buf, count, ppos);
-		printk("P.A. 7 - ksys_write_crypt \n");
+		
 		if (ret >= 0 && ppos)
 		{
-			printk("P.A. 8 - ksys_write_crypt \n");
 			f.file->f_pos = pos;
-			printk("P.A. 9 - ksys_write_crypt \n");
 		}
 			
 		fdput_pos(f);
-		printk("P.A. 10 - ksys_write_crypt \n");
 	}
-
-
-	printk("Retono ksys_write_crypt: %ld \n", ret);
-	printk("Finalizou ksys_write_crypt \n");
-	printk("FD 5: %i \n", fd);
 	return ret;
 }
 
-SYSCALL_DEFINE3(write_crypt, unsigned int, fd, const char __user *, buf,size_t, count)
+SYSCALL_DEFINE3(write_crypt, unsigned int, fd, char __user *, buf,size_t, count)
 {
 	printk("Acionou SYSCALL... \n");
 
-	printk("FD 1: %i \n", fd);
 	char *bufferOpc;
 	int i;
 
@@ -1024,7 +1004,8 @@ SYSCALL_DEFINE3(write_crypt, unsigned int, fd, const char __user *, buf,size_t, 
 	printk("Tamanho do Buffer Recebido: %li \n", count);
 
 	bufferOpc = vmalloc(count + 2);
-	if(!bufferOpc){
+	if(!bufferOpc)
+	{
         printk(KERN_ERR "kmalloc(bufferOpc) failed\n");
         return -ENOMEM;
     }
@@ -1035,16 +1016,12 @@ SYSCALL_DEFINE3(write_crypt, unsigned int, fd, const char __user *, buf,size_t, 
       		bufferOpc[i+1] = buf[i];
    	}
 	bufferOpc[i+1] = '\0';
-	printk("Buffer Shiftado: %s \n", bufferOpc);
 	
-	printk("FD 2: %i \n", fd);
 	inicio_cripto(bufferOpc, sizeof(bufferOpc));
-
-
 	printk("Retorno do dado criptado: %s \n", encrypted);
-	printk("Tamanho do dado criptado: %li \n", sizeof(encrypted));
-	printk("FD 6: %i \n", fd);
-	return ksys_write_crypt(fd, encrypted, sizeof(encrypted));
+
+	memcpy(buf, encrypted, tamSaida);
+	return ksys_write_crypt(fd, buf, tamSaida);
 }
 //-----------------------------------------------------------------------------------------------------------------------------------------------------------------
 //-----------------------------------------------------------------------------------------------------------------------------------------------------------------
