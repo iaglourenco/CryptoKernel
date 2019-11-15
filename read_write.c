@@ -25,6 +25,19 @@
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
 
+#include <linux/init.h>         //Funçoes __init, __exit 
+#include <linux/module.h>       //Necessario pra qualquer modulo de kernel
+#include <linux/device.h>       // Suporte para modulos de dispositivos
+#include <linux/kernel.h>       //macros do kernel
+#include <linux/fs.h>           // Suporte ao sistema de arquivos linux
+#include <linux/uaccess.h>      //Função copy_to_user
+#include <linux/crypto.h>       //Funçoes de criptografia
+#include <crypto/skcipher.h>    //Funçoes de criptografia
+#include <linux/mutex.h>
+#include <linux/scatterlist.h>
+#include <crypto/internal/hash.h>
+#include <linux/vmalloc.h>
+
 const struct file_operations generic_ro_fops = {
 	.llseek		= generic_file_llseek,
 	.read_iter	= generic_file_read_iter,
@@ -365,29 +378,37 @@ out_putf:
 int rw_verify_area(int read_write, struct file *file, const loff_t *ppos, size_t count)
 {
 	struct inode *inode;
-	loff_t pos;
 	int retval = -EINVAL;
 
 	inode = file_inode(file);
 	if (unlikely((ssize_t) count < 0))
 		return retval;
-	pos = *ppos;
-	if (unlikely(pos < 0)) {
-		if (!unsigned_offsets(file))
-			return retval;
-		if (count >= -pos) /* both values are in 0..LLONG_MAX */
-			return -EOVERFLOW;
-	} else if (unlikely((loff_t) (pos + count) < 0)) {
-		if (!unsigned_offsets(file))
-			return retval;
+
+	/*
+	 * ranged mandatory locking does not apply to streams - it makes sense
+	 * only for files where position has a meaning.
+	 */
+	if (ppos) {
+		loff_t pos = *ppos;
+
+		if (unlikely(pos < 0)) {
+			if (!unsigned_offsets(file))
+				return retval;
+			if (count >= -pos) /* both values are in 0..LLONG_MAX */
+				return -EOVERFLOW;
+		} else if (unlikely((loff_t) (pos + count) < 0)) {
+			if (!unsigned_offsets(file))
+				return retval;
+		}
+
+		if (unlikely(inode->i_flctx && mandatory_lock(inode))) {
+			retval = locks_mandatory_area(inode, file, pos, pos + count - 1,
+					read_write == READ ? F_RDLCK : F_WRLCK);
+			if (retval < 0)
+				return retval;
+		}
 	}
 
-	if (unlikely(inode->i_flctx && mandatory_lock(inode))) {
-		retval = locks_mandatory_area(inode, file, pos, pos + count - 1,
-				read_write == READ ? F_RDLCK : F_WRLCK);
-		if (retval < 0)
-			return retval;
-	}
 	return security_file_permission(file,
 				read_write == READ ? MAY_READ : MAY_WRITE);
 }
@@ -400,12 +421,13 @@ static ssize_t new_sync_read(struct file *filp, char __user *buf, size_t len, lo
 	ssize_t ret;
 
 	init_sync_kiocb(&kiocb, filp);
-	kiocb.ki_pos = *ppos;
+	kiocb.ki_pos = (ppos ? *ppos : 0);
 	iov_iter_init(&iter, READ, &iov, 1, len);
 
 	ret = call_read_iter(filp, &kiocb, &iter);
 	BUG_ON(ret == -EIOCBQUEUED);
-	*ppos = kiocb.ki_pos;
+	if (ppos)
+		*ppos = kiocb.ki_pos;
 	return ret;
 }
 
@@ -426,7 +448,7 @@ ssize_t kernel_read(struct file *file, void *buf, size_t count, loff_t *pos)
 	ssize_t result;
 
 	old_fs = get_fs();
-	set_fs(get_ds());
+	set_fs(KERNEL_DS);
 	/* The cast to a user pointer is valid due to the set_fs() */
 	result = vfs_read(file, (void __user *)buf, count, pos);
 	set_fs(old_fs);
@@ -468,18 +490,18 @@ static ssize_t new_sync_write(struct file *filp, const char __user *buf, size_t 
 	ssize_t ret;
 
 	init_sync_kiocb(&kiocb, filp);
-	kiocb.ki_pos = *ppos;
+	kiocb.ki_pos = (ppos ? *ppos : 0);
 	iov_iter_init(&iter, WRITE, &iov, 1, len);
 
 	ret = call_write_iter(filp, &kiocb, &iter);
 	BUG_ON(ret == -EIOCBQUEUED);
-	if (ret > 0)
+	if (ret > 0 && ppos)
 		*ppos = kiocb.ki_pos;
 	return ret;
 }
 
-ssize_t __vfs_write(struct file *file, const char __user *p, size_t count,
-		    loff_t *pos)
+static ssize_t __vfs_write(struct file *file, const char __user *p,
+			   size_t count, loff_t *pos)
 {
 	if (file->f_op->write)
 		return file->f_op->write(file, p, count, pos);
@@ -499,7 +521,7 @@ ssize_t __kernel_write(struct file *file, const void *buf, size_t count, loff_t 
 		return -EINVAL;
 
 	old_fs = get_fs();
-	set_fs(get_ds());
+	set_fs(KERNEL_DS);
 	p = (__force const char __user *)buf;
 	if (count > MAX_RW_COUNT)
 		count =  MAX_RW_COUNT;
@@ -521,7 +543,7 @@ ssize_t kernel_write(struct file *file, const void *buf, size_t count,
 	ssize_t res;
 
 	old_fs = get_fs();
-	set_fs(get_ds());
+	set_fs(KERNEL_DS);
 	/* The cast to a user pointer is valid due to the set_fs() */
 	res = vfs_write(file, (__force const char __user *)buf, count, pos);
 	set_fs(old_fs);
@@ -558,14 +580,10 @@ ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_
 	return ret;
 }
 
-static inline loff_t file_pos_read(struct file *file)
+/* file_ppos returns &file->f_pos or NULL if file is stream */
+static inline loff_t *file_ppos(struct file *file)
 {
-	return file->f_pos;
-}
-
-static inline void file_pos_write(struct file *file, loff_t pos)
-{
-	file->f_pos = pos;
+	return file->f_mode & FMODE_STREAM ? NULL : &file->f_pos;
 }
 
 ssize_t ksys_read(unsigned int fd, char __user *buf, size_t count)
@@ -574,10 +592,14 @@ ssize_t ksys_read(unsigned int fd, char __user *buf, size_t count)
 	ssize_t ret = -EBADF;
 
 	if (f.file) {
-		loff_t pos = file_pos_read(f.file);
-		ret = vfs_read(f.file, buf, count, &pos);
-		if (ret >= 0)
-			file_pos_write(f.file, pos);
+		loff_t pos, *ppos = file_ppos(f.file);
+		if (ppos) {
+			pos = *ppos;
+			ppos = &pos;
+		}
+		ret = vfs_read(f.file, buf, count, ppos);
+		if (ret >= 0 && ppos)
+			f.file->f_pos = pos;
 		fdput_pos(f);
 	}
 	return ret;
@@ -588,34 +610,449 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 	return ksys_read(fd, buf, count);
 }
 
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/* Struct que guarda o resultado da cripto ou descriptografia */ 
+struct tcrypt_result {
+    struct completion completion;
+    int err;
+};
+/* Junção com todas as structs utilizadas pelas funçoes de cryptografia */
+struct skcipher_def {
+    struct scatterlist sg[3];
+    struct crypto_skcipher *tfm;
+    struct skcipher_request *req;
+    struct tcrypt_result result;
+    struct crypto_wait wait;
+};
+
+char *key,*iv,*tempIv,*tempKey;
+char *ivC = "0123456789ABCDEF";
+char *keyC = "0123456789ABCDEF"; //Guarda o array de strings recebidos do usuario
+//static char cryptokey[32];
+//static char cryptoiv[32];
+
+static DEFINE_MUTEX(crypto_mutex);
+static int tamInput;
+static char *encrypted;
+static int tamSaida; 
+static char *decrypted;
+//static int tamSaida;
+//static int tamSaida;
+static char *ivLocal;
+int pos,i;
+char op;
+char buf;
+
+module_param(iv,charp,0000);
+MODULE_PARM_DESC(iv,"Vetor de inicialização");
+
+module_param(key,charp,0000);
+MODULE_PARM_DESC(key,"Chave de criptografia");
+
+//Prototipo das funçoes
+static ssize_t inicio_cripto(const char *buffer,size_t len);
+static void init_cifra(char *msgInput, char *msgOutput, int opc);
+static void ascii2hexa(unsigned char *in, char *out, int len);
+static int unpadding(char *string, int len);
+static void padding(char *string, int len);
+
+int converteASCII(char *string, char *ascii){ 
+
+	printk("Iniciou Converte ASCII... \n");
+
+    char temp[2];
+    int i;    
+    int cont = 0;
+    int tam = strlen(string);
+    for(i = 0; i < tam; i+=2){         
+        temp[0]  = string[i];
+        temp[1]  = string[i+1];
+        sscanf(temp, "%hhx", &ascii[cont]);
+        cont++;    
+   }
+   printk("Terminou Converte ASCII... \n");
+   return 1;
+}
+
+static ssize_t inicio_cripto(const char *buffer,size_t len){
+
+	printk("Iniciou inicio_cripto... \n");
+
+    char temp[2];
+    char *ascii;
+    char *input;    
+    char blocoIn[16]={0};
+    char blocoCrypto[16]={0};
+    int cont = 0, indice;
+
+	printk("P.A. 1 - inicio_cripto... \n");
+    op = buffer[0];
+    tamInput = len - 1;
+    if(tamInput%32 && op == 'd') return -1;//Caso a entrada nao seja multiplo de 32, retorna erro
+
+	printk("P.A. 2 - inicio_cripto... \n") ; 
+    if(!(tamInput % 16)){
+        input = vmalloc(tamInput + 32);
+    }else{
+        input = vmalloc(tamInput);    
+    }
+
+	printk("P.A. 3 - inicio_cripto... \n");
+    if(!input){
+        printk(KERN_ERR "kmalloc(input) failed\n");
+        return -ENOMEM;
+    }
+
+	printk("P.A. 4 - inicio_cripto... \n");
+    if(!(tamInput % 16))
+        ascii = vmalloc(tamInput/2 + 16);
+    else
+        ascii = vmalloc(tamInput/2);
+    if (!ascii) {
+        printk(KERN_ERR  "kmalloc(ascii) failed\n");
+        return -ENOMEM;
+    }
+
+	printk("P.A. 5 - inicio_cripto... \n");
+    ivLocal = vmalloc(16);
+    if (!ivLocal) {
+        printk(KERN_ERR  "kmalloc(input) failed\n");
+        return -ENOMEM;
+    }    
+
+	printk("P.A. 6 - inicio_cripto... \n");
+    memcpy(ivLocal, ivC, 16);
+    memcpy(input, buffer+1,tamInput);
+
+	printk("P.A. 7 - inicio_cripto... \n");
+    if(op == 'c') {
+        padding(input, tamInput); //Caso a opcao seja de criptgrafia, o padding eh feito na entrada.
+        tamInput += 32 - (tamInput%32); //Atualiza o tamanho do texto apos o padding    
+    } 
+   
+   printk("P.A. 8 - inicio_cripto... \n");
+    //Conversao de hexa para ascii
+    for(indice = 0; indice < tamInput; indice+=2){
+        temp[0]  = input[indice];
+        temp[1]  = input[indice+1];
+        sscanf(temp, "%hhx", &ascii[cont]);
+        cont++;    
+    }
+
+	printk("P.A. 9 - inicio_cripto... \n");
+    if(op == 'c'){
+		printk("P.A. 10 - inicio_cripto... \n");
+        printk("CRYPTO--> Criptografando..\n"); 
+        //Aqui entra a criptografia!
+
+		printk("P.A. 11 - inicio_cripto... \n");
+        for(indice = 0; indice < cont/16; indice++){//Cont tem a qtd de caracteres ascii, sempre multiplo de 16 (padding)            
+            for(i = 0; i < 16; i++){//Copia um bloco para criptografar
+                blocoIn[i] = ascii[indice*16 + i];//Indice*16 para deslocar o bloco (Indice tem o num. do bloco)
+            }
+            init_cifra(blocoIn, blocoCrypto, 1);
+            
+            for(i = 0; i < 16; i++){//Copia um bloco criptografado 
+                ascii[indice*16 +i] = blocoCrypto[i];//Como o bloco atual de ascii ja foi criptografado, ele eh sobrescrito
+            }
+        }
+
+	printk("P.A. 12 - inicio_cripto... \n");
+        encrypted=vmalloc(cont*2+1);
+        if(!encrypted){
+            printk(KERN_ERR "kmalloc(encrypted) error");
+        }
+	printk("P.A. 13 - inicio_cripto... \n");
+        ascii2hexa(ascii, encrypted, cont);//ascii tem todos os blocos criptografados
+        tamSaida = cont*2;
+        encrypted[cont*2] = '\0';
+
+    }else if(op == 'd'){
+		printk("P.A. ERRO - inicio_cripto... \n");
+        if(tamInput%32) return -1;//Caso a entrada nao seja multiplo de 32, retorna erro
+        printk("CRYPTO--> Descriptografando..\n"); 
+        //descriptografia aqui
+
+        for(indice = 0; indice < cont/16; indice++){//Cont tem a qtd de caracteres ascii, sempre multiplo de 16 (padding)            
+            for(i = 0; i < 16; i++){//Copia um bloco para criptografar
+                blocoIn[i] = ascii[indice*16 + i];//Indice*16 para deslocar o bloco (Indice tem o num. do bloco)
+            }
+
+            init_cifra(blocoIn, blocoCrypto, 2);
+            
+            for(i = 0; i < 16; i++){//Copia um bloco criptografado 
+                ascii[indice*16 +i] = blocoCrypto[i];//Como o bloco atual de ascii ja foi criptografado, ele eh sobrescrito
+            }
+        }
+
+        decrypted=vmalloc(cont*2);
+        if(!decrypted){
+            printk(KERN_ERR "kmalloc(encrypted) error");
+        }
+
+        ascii2hexa(ascii, decrypted, cont);
+        tamSaida=cont*2;
+
+        if(unpadding(decrypted, tamSaida) == 0)//Na descriptografia o unpadding eh feito na saida         
+            return -1;                         //Retorna erro se nao tiver padding valido 
+
+       // printk("DEBUG HEX2ASC %s\n", decrypted);
+    }
+
+	printk("P.A. 14 - inicio_cripto... \n");
+    printk(KERN_INFO "CRYPTO-->  Recebida mensagem com %ld caracteres!\n", len -1);
+    vfree(ascii);
+    vfree(input);
+    vfree(ivLocal);
+
+	printk("Fim inicio_cripto... \n");
+    return len;
+}
+
+static void ascii2hexa(unsigned char *in, char *out, int len){
+	printk("Inicio ascii2hexa... \n");
+    int i = 0;
+    while (i < len){        
+        sprintf(out+i*2, "%02x", *in++);
+        i++;       
+    }
+	printk("FIM ascii2hexa... \n");
+}
+
+static void init_cifra(char *msgInput, char *msgOutput, int opc){
+
+		printk("Inicio init_cifra... \n");
+
+        /* local variables */
+        struct skcipher_request *req ;
+        struct crypto_skcipher *skcipher = NULL;
+        struct skcipher_def sk;
+        int ret, i;
+        char saida[16];
+        char entrada[16];
+
+	printk("P.A. 1 - init_cifra... \n");
+
+        skcipher = crypto_alloc_skcipher("ecb(aes)", 0, 0);
+
+	printk("P.A. 2 - init_cifra... \n");
+
+        req = skcipher_request_alloc(skcipher, GFP_KERNEL);
+        if (req == NULL) {
+                printk("failed to load transform for aes");
+                goto out;
+        }
+	printk("P.A. 3 - init_cifra... \n");
+        ret = crypto_skcipher_setkey(skcipher, keyC, strlen(keyC));
+        if (ret) {
+                printk(KERN_ERR  "setkey() failed\n");
+                goto out;
+        }
+	printk("P.A. 4 - init_cifra... \n");
+
+        skcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG, crypto_req_done, &sk.wait);  
+
+	printk("P.A. 5 - init_cifra... \n");      
+
+        for(i = 0; i < 16; i++){
+            entrada[i] = msgInput[i];
+        } 
+
+	printk("P.A. 6 - init_cifra... \n");
+
+        sk.tfm = skcipher;
+        sk.req = req;
+
+	printk("P.A. 7 - init_cifra... \n");
+
+        sg_init_one(&sk.sg[0], entrada, 16);
+        sg_init_one(&sk.sg[1], saida, 16);
+
+	printk("P.A. 8 - init_cifra... \n");
+
+        if(opc == 1){  
+			printk("P.A. 9 - init_cifra... \n");
+            skcipher_request_set_crypt(req, &sk.sg[0], &sk.sg[1], 16, ivLocal);
+            crypto_init_wait(&sk.wait);
+            init_completion(&sk.result.completion);
+        printk("P.A. 10 - init_cifra... \n");
+            ret = crypto_wait_req(crypto_skcipher_encrypt(sk.req), &sk.wait);
+			printk("P.A. 10.1 - init_cifra... \n");
+            if (ret) {
+                printk(KERN_ERR  "encryption failed erro");
+                goto out;
+            }
+			printk("P.A. 11 - init_cifra... \n");
+        }else{
+			printk("P.A. 12 - init_cifra... \n");
+            skcipher_request_set_crypt(req, &sk.sg[0], &sk.sg[1], 16, ivLocal);
+            crypto_init_wait(&sk.wait);
+            init_completion(&sk.result.completion);
+        printk("P.A. 13- init_cifra... \n");
+            ret = crypto_wait_req(crypto_skcipher_decrypt(sk.req), &sk.wait);
+			printk("P.A. 14 - init_cifra... \n");
+            if (ret) {
+                printk(KERN_ERR  "encryption failed erro");
+                goto out;
+            }
+			printk("P.A. 15 - init_cifra... \n");
+        }
+printk("P.A. 16 - init_cifra... \n");
+    for(i = 0; i < 16; i++){
+        msgOutput[i] = saida[i];
+    }
+
+    printk("FIM init_cifra... \n");
+out:
+    if (skcipher)
+        crypto_free_skcipher(skcipher);
+    if (req)
+        skcipher_request_free(req);       
+}
 
 
-//-------------------------------------------------------------------------------------------------
+static void padding(char *string, int len){ //Padrao utilizado PKCS#7
+
+	printk("Inicio Padding... \n");
+    int qdtBlocos32, bytesOcupados;
+    int i;
+    qdtBlocos32 = len/32;   //Obtem a quantidade de blocos completos
+    bytesOcupados = len%32; //Obtem a quantidade de bytes usados no ultimo bloco
+
+	printk("P.A. 1 - Padding... \n");
+
+    if(bytesOcupados == 0){ //Caso a string tenha o tamanho multiplo de 16, preenche um novo blco com o num 0x10 (tamanho do bloco)
+        for(i = 0; i < 32; i++){            
+            sprintf(string + qdtBlocos32*32 + i*2,"%02x", 16);//Converte 16 decimal para hexa (0x10)
+        }
+    }
+    else {
+        for(i = 0; i < (32 - bytesOcupados); i++){//O ultimo bloco eh preenchido com o valor da qtd de bytes livres
+            sprintf(string + qdtBlocos32*32 + i*2 + bytesOcupados,"%02x", (32 - bytesOcupados)/2);
+         }
+    } 
+
+	printk("FiM Padding... \n");   
+}
+
+static int unpadding(char *string, int len){ //Padrao utilizado PKCS#7
+printk("Inicio unpadding... \n");
+    char temp[3];
+    int qtdPadding;//Quantidade de bytes usados no padding
+    int numP;//Numero usado para preencher o padding
+    int i;
+printk("P.A 1 - unpadding... \n");
+    temp[0]  = string[len-2];//Ultimo numero sempre eh usado para calcular o padding
+    temp[1]  = string[len-1];
+    temp[2]  = '\0';    
+    sscanf(temp, "%x", &qtdPadding);// Converte o num de hexa para decimal
+printk("P.A 2 - unpadding... \n");
+    for(i = 0; i < qtdPadding*2; i += 2){
+        temp[0]  = string[len - 2 - i];
+        temp[1]  = string[len - 1 - i];
+        temp[2]  = '\0';
+        sscanf(temp, "%x", &numP);
+        if(numP != qtdPadding){//Caso o numero usado para preencher seja diferente da qtd, retorna erro
+            printk("Erro de padding\n");
+            return 0; 
+        } 
+    }
+	printk("P.A 3 - unpadding... \n");
+    string[len - qtdPadding*2] = '\0';//Descarta numeros usados no padding
+	printk("FIM unpadding... \n");
+    return 1;
+}
+
 ssize_t ksys_write_crypt(unsigned int fd, const char __user *buf, size_t count)
 {
+	printk("FD 3: %i \n", fd);
+	printk("Iniciou ksys_write_crypt \n");
+
 	struct fd f = fdget_pos(fd);
 	ssize_t ret = -EBADF;
 
+	printk("FD 4: %i \n", fd);
+	printk("P.A. 1 - ksys_write_crypt \n");
+
 	if (f.file) {
-		loff_t pos = file_pos_read(f.file);
-		ret = vfs_write(f.file, buf, count, &pos);
-		if (ret >= 0)
-			file_pos_write(f.file, pos);
+		printk("P.A. 2 - ksys_write_crypt \n");
+		loff_t pos, *ppos = file_ppos(f.file);
+		printk("P.A. 3 - ksys_write_crypt \n");
+		if (ppos) {
+			printk("P.A. 4 - ksys_write_crypt \n");
+			pos = *ppos;
+			ppos = &pos;
+			printk("P.A. 5 - ksys_write_crypt \n");
+		}
+		printk("P.A. 6 - ksys_write_crypt \n");
+		ret = vfs_write(f.file, buf, count, ppos);
+		printk("P.A. 7 - ksys_write_crypt \n");
+		if (ret >= 0 && ppos)
+		{
+			printk("P.A. 8 - ksys_write_crypt \n");
+			f.file->f_pos = pos;
+			printk("P.A. 9 - ksys_write_crypt \n");
+		}
+			
 		fdput_pos(f);
+		printk("P.A. 10 - ksys_write_crypt \n");
 	}
 
+
+	printk("Retono ksys_write_crypt: %ld \n", ret);
+	printk("Finalizou ksys_write_crypt \n");
+	printk("FD 5: %i \n", fd);
 	return ret;
 }
 
-SYSCALL_DEFINE3(write_crypt, unsigned int, fd, const char __user *, buf,
-		size_t, count)
+SYSCALL_DEFINE3(write_crypt, unsigned int, fd, const char __user *, buf,size_t, count)
 {
-	return ksys_write_crypt(fd, buf, count);
+	printk("Acionou SYSCALL... \n");
+
+	printk("FD 1: %i \n", fd);
+	char *bufferOpc;
+	int i;
+
+	printk("Buffer Recebido: %s \n", buf);
+	printk("Tamanho do Buffer Recebido: %li \n", count);
+
+	bufferOpc = vmalloc(count + 2);
+	if(!bufferOpc){
+        printk(KERN_ERR "kmalloc(bufferOpc) failed\n");
+        return -ENOMEM;
+    }
+	
+	bufferOpc[0] = 'c';
+	for(i = 0; i < count; i++)
+	{
+      		bufferOpc[i+1] = buf[i];
+   	}
+	bufferOpc[i+1] = '\0';
+	printk("Buffer Shiftado: %s \n", bufferOpc);
+	
+	printk("FD 2: %i \n", fd);
+	inicio_cripto(bufferOpc, sizeof(bufferOpc));
+
+
+	printk("Retorno do dado criptado: %s \n", encrypted);
+	printk("Tamanho do dado criptado: %li \n", sizeof(encrypted));
+	printk("FD 6: %i \n", fd);
+	return ksys_write_crypt(fd, encrypted, sizeof(encrypted));
 }
-//-------------------------------------------------------------------------------------------------
-
-
-
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 ssize_t ksys_write(unsigned int fd, const char __user *buf, size_t count)
 {
@@ -623,10 +1060,14 @@ ssize_t ksys_write(unsigned int fd, const char __user *buf, size_t count)
 	ssize_t ret = -EBADF;
 
 	if (f.file) {
-		loff_t pos = file_pos_read(f.file);
-		ret = vfs_write(f.file, buf, count, &pos);
-		if (ret >= 0)
-			file_pos_write(f.file, pos);
+		loff_t pos, *ppos = file_ppos(f.file);
+		if (ppos) {
+			pos = *ppos;
+			ppos = &pos;
+		}
+		ret = vfs_write(f.file, buf, count, ppos);
+		if (ret >= 0 && ppos)
+			f.file->f_pos = pos;
 		fdput_pos(f);
 	}
 
@@ -701,14 +1142,15 @@ static ssize_t do_iter_readv_writev(struct file *filp, struct iov_iter *iter,
 	ret = kiocb_set_rw_flags(&kiocb, flags);
 	if (ret)
 		return ret;
-	kiocb.ki_pos = *ppos;
+	kiocb.ki_pos = (ppos ? *ppos : 0);
 
 	if (type == READ)
 		ret = call_read_iter(filp, &kiocb, iter);
 	else
 		ret = call_write_iter(filp, &kiocb, iter);
 	BUG_ON(ret == -EIOCBQUEUED);
-	*ppos = kiocb.ki_pos;
+	if (ppos)
+		*ppos = kiocb.ki_pos;
 	return ret;
 }
 
@@ -1041,10 +1483,14 @@ static ssize_t do_readv(unsigned long fd, const struct iovec __user *vec,
 	ssize_t ret = -EBADF;
 
 	if (f.file) {
-		loff_t pos = file_pos_read(f.file);
-		ret = vfs_readv(f.file, vec, vlen, &pos, flags);
-		if (ret >= 0)
-			file_pos_write(f.file, pos);
+		loff_t pos, *ppos = file_ppos(f.file);
+		if (ppos) {
+			pos = *ppos;
+			ppos = &pos;
+		}
+		ret = vfs_readv(f.file, vec, vlen, ppos, flags);
+		if (ret >= 0 && ppos)
+			f.file->f_pos = pos;
 		fdput_pos(f);
 	}
 
@@ -1061,10 +1507,14 @@ static ssize_t do_writev(unsigned long fd, const struct iovec __user *vec,
 	ssize_t ret = -EBADF;
 
 	if (f.file) {
-		loff_t pos = file_pos_read(f.file);
-		ret = vfs_writev(f.file, vec, vlen, &pos, flags);
-		if (ret >= 0)
-			file_pos_write(f.file, pos);
+		loff_t pos, *ppos = file_ppos(f.file);
+		if (ppos) {
+			pos = *ppos;
+			ppos = &pos;
+		}
+		ret = vfs_writev(f.file, vec, vlen, ppos, flags);
+		if (ret >= 0 && ppos)
+			f.file->f_pos = pos;
 		fdput_pos(f);
 	}
 
@@ -1267,6 +1717,9 @@ COMPAT_SYSCALL_DEFINE5(preadv64v2, unsigned long, fd,
 		const struct compat_iovec __user *,vec,
 		unsigned long, vlen, loff_t, pos, rwf_t, flags)
 {
+	if (pos == -1)
+		return do_compat_readv(fd, vec, vlen, flags);
+
 	return do_compat_preadv64(fd, vec, vlen, pos, flags);
 }
 #endif
@@ -1373,6 +1826,9 @@ COMPAT_SYSCALL_DEFINE5(pwritev64v2, unsigned long, fd,
 		const struct compat_iovec __user *,vec,
 		unsigned long, vlen, loff_t, pos, rwf_t, flags)
 {
+	if (pos == -1)
+		return do_compat_writev(fd, vec, vlen, flags);
+
 	return do_compat_pwritev64(fd, vec, vlen, pos, flags);
 }
 #endif
@@ -1566,6 +2022,58 @@ COMPAT_SYSCALL_DEFINE4(sendfile64, int, out_fd, int, in_fd,
 }
 #endif
 
+/**
+ * generic_copy_file_range - copy data between two files
+ * @file_in:	file structure to read from
+ * @pos_in:	file offset to read from
+ * @file_out:	file structure to write data to
+ * @pos_out:	file offset to write data to
+ * @len:	amount of data to copy
+ * @flags:	copy flags
+ *
+ * This is a generic filesystem helper to copy data from one file to another.
+ * It has no constraints on the source or destination file owners - the files
+ * can belong to different superblocks and different filesystem types. Short
+ * copies are allowed.
+ *
+ * This should be called from the @file_out filesystem, as per the
+ * ->copy_file_range() method.
+ *
+ * Returns the number of bytes copied or a negative error indicating the
+ * failure.
+ */
+
+ssize_t generic_copy_file_range(struct file *file_in, loff_t pos_in,
+				struct file *file_out, loff_t pos_out,
+				size_t len, unsigned int flags)
+{
+	return do_splice_direct(file_in, &pos_in, file_out, &pos_out,
+				len > MAX_RW_COUNT ? MAX_RW_COUNT : len, 0);
+}
+EXPORT_SYMBOL(generic_copy_file_range);
+
+static ssize_t do_copy_file_range(struct file *file_in, loff_t pos_in,
+				  struct file *file_out, loff_t pos_out,
+				  size_t len, unsigned int flags)
+{
+	/*
+	 * Although we now allow filesystems to handle cross sb copy, passing
+	 * a file of the wrong filesystem type to filesystem driver can result
+	 * in an attempt to dereference the wrong type of ->private_data, so
+	 * avoid doing that until we really have a good reason.  NFS defines
+	 * several different file_system_type structures, but they all end up
+	 * using the same ->copy_file_range() function pointer.
+	 */
+	if (file_out->f_op->copy_file_range &&
+	    file_out->f_op->copy_file_range == file_in->f_op->copy_file_range)
+		return file_out->f_op->copy_file_range(file_in, pos_in,
+						       file_out, pos_out,
+						       len, flags);
+
+	return generic_copy_file_range(file_in, pos_in, file_out, pos_out, len,
+				       flags);
+}
+
 /*
  * copy_file_range() differs from regular file read and write in that it
  * specifically allows return partial success.  When it does so is up to
@@ -1575,17 +2083,15 @@ ssize_t vfs_copy_file_range(struct file *file_in, loff_t pos_in,
 			    struct file *file_out, loff_t pos_out,
 			    size_t len, unsigned int flags)
 {
-	struct inode *inode_in = file_inode(file_in);
-	struct inode *inode_out = file_inode(file_out);
 	ssize_t ret;
 
 	if (flags != 0)
 		return -EINVAL;
 
-	if (S_ISDIR(inode_in->i_mode) || S_ISDIR(inode_out->i_mode))
-		return -EISDIR;
-	if (!S_ISREG(inode_in->i_mode) || !S_ISREG(inode_out->i_mode))
-		return -EINVAL;
+	ret = generic_copy_file_checks(file_in, pos_in, file_out, pos_out, &len,
+				       flags);
+	if (unlikely(ret))
+		return ret;
 
 	ret = rw_verify_area(READ, file_in, &pos_in, len);
 	if (unlikely(ret))
@@ -1594,15 +2100,6 @@ ssize_t vfs_copy_file_range(struct file *file_in, loff_t pos_in,
 	ret = rw_verify_area(WRITE, file_out, &pos_out, len);
 	if (unlikely(ret))
 		return ret;
-
-	if (!(file_in->f_mode & FMODE_READ) ||
-	    !(file_out->f_mode & FMODE_WRITE) ||
-	    (file_out->f_flags & O_APPEND))
-		return -EBADF;
-
-	/* this could be relaxed once a method supports cross-fs copies */
-	if (inode_in->i_sb != inode_out->i_sb)
-		return -EXDEV;
 
 	if (len == 0)
 		return 0;
@@ -1613,7 +2110,8 @@ ssize_t vfs_copy_file_range(struct file *file_in, loff_t pos_in,
 	 * Try cloning first, this is supported by more file systems, and
 	 * more efficient if both clone and copy are supported (e.g. NFS).
 	 */
-	if (file_in->f_op->remap_file_range) {
+	if (file_in->f_op->remap_file_range &&
+	    file_inode(file_in)->i_sb == file_inode(file_out)->i_sb) {
 		loff_t cloned;
 
 		cloned = file_in->f_op->remap_file_range(file_in, pos_in,
@@ -1626,16 +2124,9 @@ ssize_t vfs_copy_file_range(struct file *file_in, loff_t pos_in,
 		}
 	}
 
-	if (file_out->f_op->copy_file_range) {
-		ret = file_out->f_op->copy_file_range(file_in, pos_in, file_out,
-						      pos_out, len, flags);
-		if (ret != -EOPNOTSUPP)
-			goto done;
-	}
-
-	ret = do_splice_direct(file_in, &pos_in, file_out, &pos_out,
-			len > MAX_RW_COUNT ? MAX_RW_COUNT : len, 0);
-
+	ret = do_copy_file_range(file_in, pos_in, file_out, pos_out, len,
+				flags);
+	WARN_ON_ONCE(ret == -EOPNOTSUPP);
 done:
 	if (ret > 0) {
 		fsnotify_access(file_in);
@@ -1777,10 +2268,7 @@ static int generic_remap_check_len(struct inode *inode_in,
 	return (remap_flags & REMAP_FILE_DEDUP) ? -EBADE : -EINVAL;
 }
 
-/*
- * Read a page's worth of file data into the page cache.  Return the page
- * locked.
- */
+/* Read a page's worth of file data into the page cache. */
 static struct page *vfs_dedupe_get_page(struct inode *inode, loff_t offset)
 {
 	struct page *page;
@@ -1792,8 +2280,30 @@ static struct page *vfs_dedupe_get_page(struct inode *inode, loff_t offset)
 		put_page(page);
 		return ERR_PTR(-EIO);
 	}
-	lock_page(page);
 	return page;
+}
+
+/*
+ * Lock two pages, ensuring that we lock in offset order if the pages are from
+ * the same file.
+ */
+static void vfs_lock_two_pages(struct page *page1, struct page *page2)
+{
+	/* Always lock in order of increasing index. */
+	if (page1->index > page2->index)
+		swap(page1, page2);
+
+	lock_page(page1);
+	if (page1 != page2)
+		lock_page(page2);
+}
+
+/* Unlock two pages, being careful not to unlock the same page twice. */
+static void vfs_unlock_two_pages(struct page *page1, struct page *page2)
+{
+	unlock_page(page1);
+	if (page1 != page2)
+		unlock_page(page2);
 }
 
 /*
@@ -1833,10 +2343,24 @@ static int vfs_dedupe_file_range_compare(struct inode *src, loff_t srcoff,
 		dest_page = vfs_dedupe_get_page(dest, destoff);
 		if (IS_ERR(dest_page)) {
 			error = PTR_ERR(dest_page);
-			unlock_page(src_page);
 			put_page(src_page);
 			goto out_error;
 		}
+
+		vfs_lock_two_pages(src_page, dest_page);
+
+		/*
+		 * Now that we've locked both pages, make sure they're still
+		 * mapped to the file data we're interested in.  If not,
+		 * someone is invalidating pages on us and we lose.
+		 */
+		if (!PageUptodate(src_page) || !PageUptodate(dest_page) ||
+		    src_page->mapping != src->i_mapping ||
+		    dest_page->mapping != dest->i_mapping) {
+			same = false;
+			goto unlock;
+		}
+
 		src_addr = kmap_atomic(src_page);
 		dest_addr = kmap_atomic(dest_page);
 
@@ -1848,8 +2372,8 @@ static int vfs_dedupe_file_range_compare(struct inode *src, loff_t srcoff,
 
 		kunmap_atomic(dest_addr);
 		kunmap_atomic(src_addr);
-		unlock_page(dest_page);
-		unlock_page(src_page);
+unlock:
+		vfs_unlock_two_pages(src_page, dest_page);
 		put_page(dest_page);
 		put_page(src_page);
 
@@ -1952,25 +2476,10 @@ int generic_remap_file_range_prep(struct file *file_in, loff_t pos_in,
 		return ret;
 
 	/* If can't alter the file contents, we're done. */
-	if (!(remap_flags & REMAP_FILE_DEDUP)) {
-		/* Update the timestamps, since we can alter file contents. */
-		if (!(file_out->f_mode & FMODE_NOCMTIME)) {
-			ret = file_update_time(file_out);
-			if (ret)
-				return ret;
-		}
+	if (!(remap_flags & REMAP_FILE_DEDUP))
+		ret = file_modified(file_out);
 
-		/*
-		 * Clear the security bits if the process is not being run by
-		 * root.  This keeps people from modifying setuid and setgid
-		 * binaries.
-		 */
-		ret = file_remove_privs(file_out);
-		if (ret)
-			return ret;
-	}
-
-	return 0;
+	return ret;
 }
 EXPORT_SYMBOL(generic_remap_file_range_prep);
 
@@ -1978,29 +2487,21 @@ loff_t do_clone_file_range(struct file *file_in, loff_t pos_in,
 			   struct file *file_out, loff_t pos_out,
 			   loff_t len, unsigned int remap_flags)
 {
-	struct inode *inode_in = file_inode(file_in);
-	struct inode *inode_out = file_inode(file_out);
 	loff_t ret;
 
 	WARN_ON_ONCE(remap_flags & REMAP_FILE_DEDUP);
-
-	if (S_ISDIR(inode_in->i_mode) || S_ISDIR(inode_out->i_mode))
-		return -EISDIR;
-	if (!S_ISREG(inode_in->i_mode) || !S_ISREG(inode_out->i_mode))
-		return -EINVAL;
 
 	/*
 	 * FICLONE/FICLONERANGE ioctls enforce that src and dest files are on
 	 * the same mount. Practically, they only need to be on the same file
 	 * system.
 	 */
-	if (inode_in->i_sb != inode_out->i_sb)
+	if (file_inode(file_in)->i_sb != file_inode(file_out)->i_sb)
 		return -EXDEV;
 
-	if (!(file_in->f_mode & FMODE_READ) ||
-	    !(file_out->f_mode & FMODE_WRITE) ||
-	    (file_out->f_flags & O_APPEND))
-		return -EBADF;
+	ret = generic_file_rw_checks(file_in, file_out);
+	if (ret < 0)
+		return ret;
 
 	if (!file_in->f_op->remap_file_range)
 		return -EOPNOTSUPP;
