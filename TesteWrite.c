@@ -9,14 +9,15 @@ int main (int argc, char *argv[])
     int fd1;
     char buf[128];
 
-    fd1 = open("/home/lucas/Documents/Syscall/teste.txt", O_WRONLY);
+    fd1 = open("/home/cobaia/Documentos/teste.txt", O_WRONLY);
     if (fd1 == -1) {
         return EXIT_FAILURE;
     }
 
     scanf("%127s", buf);
 
-    write(fd1, buf, strlen(buf)); 
+    syscall(548, fd1, buf, strlen(buf)); 
+    sync();
     close(fd1);
     return 0;
 }
