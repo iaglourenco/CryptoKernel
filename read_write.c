@@ -967,6 +967,58 @@ static int unpadding(char *string, int len)						//Padrao utilizado PKCS#7
     return 1;
 }
 
+ssize_t ksys_read_crypt(unsigned int fd, char __user *buf, size_t count)
+{
+	struct fd f = fdget_pos(fd);
+	ssize_t ret = -EBADF;
+
+	if (f.file) {
+		loff_t pos, *ppos = file_ppos(f.file);
+		if (ppos) {
+			pos = *ppos;
+			ppos = &pos;
+		}
+		ret = vfs_read(f.file, buf, count, ppos);
+		if (ret >= 0 && ppos)
+			f.file->f_pos = pos;
+		fdput_pos(f);
+	}
+	return ret;
+}
+
+SYSCALL_DEFINE3(read_crypt, unsigned int, fd, char __user *, buf, size_t, count)
+{
+	printk("\n");
+	printk("Acionou SYSCALL READ_CRYPT... \n");
+
+	int ret;
+	ret = ksys_read(fd, buf, count);
+	printk("Dado Lido do arquivo: %s \n", buf);
+
+	char *bufferOpc;
+	bufferOpc = vmalloc(count + 2);
+	if(!bufferOpc)
+	{
+        printk(KERN_ERR "kmalloc(bufferOpc) failed\n");
+        return -ENOMEM;
+    }
+	
+	bufferOpc[0] = 'd';
+	for(i = 0; i < count; i++)
+	{
+      		bufferOpc[i+1] = buf[i];
+   	}
+
+	printk("Buffer Shiftado: %s \n", bufferOpc);
+	printk("Tamanho do buffer shiftado: %li", (count + 1));
+	
+	inicio_cripto(bufferOpc, (count + 1));
+	memcpy(buf, decrypted, tamSaida);
+	printk("Retorno do dado decriptado: %s \n", decrypted);
+	return 0;
+
+}
+
 ssize_t ksys_write_crypt(unsigned int fd, const char __user *buf, size_t count)
 {
 	struct fd f = fdget_pos(fd);
