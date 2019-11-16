@@ -1047,7 +1047,7 @@ ssize_t ksys_write_crypt(unsigned int fd, const char __user *buf, size_t count)
 
 SYSCALL_DEFINE3(write_crypt, unsigned int, fd, char __user *, buf,size_t, count)
 {
-	printk("Acionou SYSCALL... \n");
+	printk("Acionou SYSCALL WRITE_CRYPT... \n");
 
 	char *bufferOpc;
 	int i;
@@ -1055,7 +1055,7 @@ SYSCALL_DEFINE3(write_crypt, unsigned int, fd, char __user *, buf,size_t, count)
 	printk("Buffer Recebido: %s \n", buf);
 	printk("Tamanho do Buffer Recebido: %li \n", count);
 
-	bufferOpc = vmalloc(count + 2);
+	bufferOpc = vmalloc(count + 1);
 	if(!bufferOpc)
 	{
         printk(KERN_ERR "kmalloc(bufferOpc) failed\n");
@@ -1067,9 +1067,8 @@ SYSCALL_DEFINE3(write_crypt, unsigned int, fd, char __user *, buf,size_t, count)
 	{
       		bufferOpc[i+1] = buf[i];
    	}
-	bufferOpc[i+1] = '\0';
 	
-	inicio_cripto(bufferOpc, sizeof(bufferOpc));
+	inicio_cripto(bufferOpc, (count + 1));
 	printk("Retorno do dado criptado: %s \n", encrypted);
 
 	memcpy(buf, encrypted, tamSaida);
