@@ -4,55 +4,90 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-int main (int argc, char *argv[])
+int write_crypt()
 {
-
-
-
     int fd1;
     char buf[128];
+
+    fd1 = open("/home/cobaia/Documentos/teste.txt", O_WRONLY);
+    if (fd1 == -1) {
+        return -1;
+    }
+
+    scanf("%127s", buf);
+
+    syscall(548, fd1, buf, strlen(buf)); 
+    sync();
+    close(fd1);
+}
+
+int read_crypt()
+{
+    int fd1, sz;
     char *c = (char *) calloc(127, sizeof(char)); 
-    int op = -1;
+
+    fd1 = open("/home/cobaia/Documentos/teste.txt", O_RDONLY);
+    if (fd1 == -1) {
+        return -1;
+    }
+
+    syscall(549, fd1, c, 32);  
+    printf("%s \n",c);
+ 
+    close(fd1);
+}
+
+int main (int argc, char *argv[])
+{
+    int opc;
 
     do
     {
+        printf("Digite 1 para criptar e gravar dado no arquivo. \n");
+        printf("Digite 2 para ler e decriptar dado do arquivo. \n");
+        printf("Digite 3 para creditos. \n");
+        printf("Digite 4 para sair. \n");
 
-        printf("Write e Read com criptografia em arquivo usando syscall\n");
-        printf("Use os comandos abaixo se deseja escrever ou ler o arquivo\n");
-        printf("1 - Escrever\n2 - Ler\n3 - Sair\n");
-        scanf("%i",op);
+        scanf("%i", &opc);
 
-        if (op == 1)
+        switch (opc)
         {
-            fd1 = open("teste.txt", O_WRONLY);
-            if (fd1 == -1) 
-            {
-                return EXIT_FAILURE;
-            }
+        case 1:
+            printf("----------------------------------------------------\n");
+            printf("Digite o dado que deseja armazenar criptado: \n");
+            write_crypt();
+            printf("Dado criptografado e armazenado com sucesso! \n");
+            printf("----------------------------------------------------\n");
+            printf("\n");
+            break;
 
-            scanf("%127s", buf);
+        case 2:
+            printf("----------------------------------------------------\n");
+            printf("Dado decriptado: \n");
+            read_crypt();
+            printf("----------------------------------------------------\n");
+            printf("\n");
+            break;
+        case 3:
+            printf("----------------------------------------------------\n");
+            printf("Adriano de Oliveira Munin   17066960 \n");
+            printf("Fabio Seiji Irokawa         17057720 \n");
+            printf("Iago Jardim Lourenco        15610116 \n");
+            printf("Lucas Rodrigues Coutinho    17776501 \n");
+            printf("----------------------------------------------------\n");
+            printf("\n");
+            break;
 
-            //syscall(548, fd1, buf, strlen(buf)); 
-            int sss = strlen(buf);	
-            printf("Sent %i, %d and %i\n",fd1,*buf,sss);
-            write(fd1,buf,strlen(buf));
-            close(fd1);
+        case 4:
+            break;
+        
+        default:
+            printf("Opcao invalida! \n");
+            printf("\n");
+            break;
         }
 
-        else if(op == 2)
-        {
-            fd1 = open("teste.txt", O_RDONLY);
-            if (fd1 == -1) 
-            {
-                return EXIT_FAILURE;
-            }
-            //syscall(549, fd1, c, 127);
-            read(fd1, c, 127); 
-            printf("%s",c);
-            close(fd1);
-        }
-
-    }
-    while(op != 3);
-    return 0;
+    } while (opc != 4);
+    
+    
 }
