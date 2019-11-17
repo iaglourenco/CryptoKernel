@@ -1,46 +1,18 @@
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <fcntl.h>
-#include <unistd.h>
+#include <errno.h>
 
-int write_crypt()
-{
-    int fd1;
-    char buf[128];
-
-    fd1 = open("/home/cobaia/Documentos/teste.txt", O_WRONLY);
-    if (fd1 == -1) {
-        return -1;
-    }
-
-    scanf("%127s", buf);
-
-    syscall(548, fd1, buf, strlen(buf)); 
-    sync();
-    close(fd1);
-}
-
-int read_crypt()
-{
-    int fd1, sz;
-    char *c = (char *) calloc(127, sizeof(char)); 
-
-    fd1 = open("/home/cobaia/Documentos/teste.txt", O_RDONLY);
-    if (fd1 == -1) {
-        return -1;
-    }
-
-    syscall(549, fd1, c, 32);  
-    printf("%s \n",c);
- 
-    close(fd1);
-}
+#include "user.h"
 
 int main (int argc, char *argv[])
 {
-    int opc;
-
+	int opc;
+	char buf[128];
+	char *c = (char *) calloc(127, sizeof(char)); 
+	int fd=creat("./teste.txt",S_IRWXU);
+	close(fd);
     do
     {
         printf("Digite 1 para criptar e gravar dado no arquivo. \n");
@@ -50,21 +22,36 @@ int main (int argc, char *argv[])
 
         scanf("%i", &opc);
 
-        switch (opc)
-        {
+        switch (opc){
+
         case 1:
+            fd = open("./teste.txt",O_WRONLY);
+			if (fd < 0) {
+				perror("Falha ao abrir arquivo...");
+			    return errno;     
+			}
             printf("----------------------------------------------------\n");
             printf("Digite o dado que deseja armazenar criptado: \n");
-            write_crypt();
+			scanf("%127s", buf);
+            write_crypt(fd,buf,strlen(buf));
+			sync();
+			close(fd);
             printf("Dado criptografado e armazenado com sucesso! \n");
             printf("----------------------------------------------------\n");
             printf("\n");
             break;
 
         case 2:
+			fd = open("./teste.txt",O_RDONLY);
+			if (fd < 0) {
+				perror("Falha ao abrir arquivo...");
+			    return errno;     
+			}
             printf("----------------------------------------------------\n");
             printf("Dado decriptado: \n");
-            read_crypt();
+			read_crypt(fd,c,32);
+ 			printf("%s \n",c);
+    		close(fd);
             printf("----------------------------------------------------\n");
             printf("\n");
             break;
