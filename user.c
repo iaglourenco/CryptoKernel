@@ -6,7 +6,7 @@
 
 #include "user.h"
 
-int main (int argc, char *argv[])
+int main ()
 {
 	int opc;
 	char buf[128];
