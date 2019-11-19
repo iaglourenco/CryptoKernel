@@ -10,8 +10,10 @@ int main ()
 {
 	int opc;
 	char buf[128];
-	char *c = (char *) calloc(127, sizeof(char)); 
+	char *c; 
 	int fd=creat("./teste.txt",S_IRWXU);
+    FILE *stream = fopen("./teste.txt","r");
+    int tamFile=0;
 	close(fd);
     do
     {
@@ -47,11 +49,16 @@ int main ()
 				perror("Falha ao abrir arquivo...");
 			    return errno;     
 			}
+            fseek(stream,0,SEEK_END);
+            tamFile = ftell(stream);
+            fseek(stream,0,SEEK_SET);
+            c = (char *) calloc(127, sizeof(char));
             printf("----------------------------------------------------\n");
             printf("Dado decriptado: \n");
-			read_crypt(fd,c,32);
+			read_crypt(fd,c,tamFile);
  			printf("%s \n",c);
     		close(fd);
+            fclose(stream);
             printf("----------------------------------------------------\n");
             printf("\n");
             break;
