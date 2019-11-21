@@ -79,7 +79,8 @@ void escrita()
     fd = open("teste.txt", O_RDONLY);
     read(fd, criptografado, 128);
     close(fd);
-
+	
+    printf("Dado armazenadono arquivo: \n");
     printf("%s \n", criptografado);
     
     printf("Dado criptografado e armazenado com sucesso! \n");
