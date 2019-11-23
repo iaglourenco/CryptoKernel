@@ -50,6 +50,7 @@ int main ()
         }
 
     } while (opc != 4); 
+    return 0;
 }
 
 void escrita()
@@ -60,7 +61,7 @@ void escrita()
     char bufhexa[256];
     char criptografado[128];
 
-    fd = open("teste.txt", O_WRONLY | O_TRUNC);
+    fd = open("teste.txt", O_WRONLY | O_TRUNC | O_CREAT, 0644);
 	if (fd < 0) 
     {
         perror("Falha ao abrir arquivo...");
