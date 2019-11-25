@@ -45,7 +45,7 @@ int main ()
         default:
             printf("Opcao invalida! \n");
             printf("\n");
-	        opc = 4;
+	       opc = 4;
             break;
         }
 
@@ -61,7 +61,10 @@ void escrita()
     char bufhexa[256];
     char criptografado[128];
 
-    fd = open("teste.txt", O_WRONLY | O_TRUNC | O_CREAT, 0644);
+    int tamFile1=0;
+    char *c; 
+
+    fd = open("foo.txt", O_WRONLY | O_TRUNC | O_CREAT, 0644);
 	if (fd < 0) 
     {
         perror("Falha ao abrir arquivo...");
@@ -77,12 +80,20 @@ void escrita()
     sync();
 	close(fd);
 
-    fd = open("teste.txt", O_RDONLY);
-    read(fd, criptografado, 128);
+    fd = open("foo.txt", O_RDONLY);
+
+    FILE *stream = fopen("foo.txt","r");
+    fseek(stream,0,SEEK_END);
+    tamFile1 = ftell(stream);
+    fseek(stream,0,SEEK_SET);
+
+    c = (char *) calloc(tamFile1, sizeof(char));
+    read(fd, c, tamFile1);
     close(fd);
-	
+	fclose(stream);
+
     printf("Dado armazenadono arquivo: \n");
-    printf("%s \n", criptografado);
+    printf("%s \n", c);
     
     printf("Dado criptografado e armazenado com sucesso! \n");
     printf("----------------------------------------------------\n");
@@ -97,12 +108,12 @@ void leitura()
     char *c; 
     char *ascii;
     
-    fd = open("teste.txt", O_RDONLY);
+    fd = open("foo.txt", O_RDONLY);
 	if (fd < 0) {
 		perror("Falha ao abrir arquivo...");    
 	}
 
-    FILE *stream = fopen("teste.txt","r");
+    FILE *stream = fopen("foo.txt","r");
     fseek(stream,0,SEEK_END);
     tamFile = ftell(stream);
     fseek(stream,0,SEEK_SET);
@@ -155,3 +166,4 @@ void hexa2ascii(char *string, char ascii[])
         cont++;    
    }
 }
+
