@@ -60,7 +60,7 @@ void escrita()
     char bufascii[128];
     char bufhexa[256];
     char criptografado[128];
-
+    int ret;
     int tamFile1=0;
     char *c; 
 
@@ -68,6 +68,7 @@ void escrita()
 	if (fd < 0) 
     {
         perror("Falha ao abrir arquivo...");
+        return errno;
 	}
 
     printf("----------------------------------------------------\n");
@@ -75,8 +76,11 @@ void escrita()
 	
     scanf("%s", bufascii);
     ascii2hexa(bufascii, bufhexa);
-	write_crypt(fd,bufhexa,(strlen(bufascii) * 2));
-	
+	ret = write_crypt(fd,bufhexa,(strlen(bufascii) * 2));
+	if(IS_ERR(ret)){
+        perror("Falha ao criptografar... ");
+        return errno;
+    }
     sync();
 	close(fd);
 
@@ -104,7 +108,7 @@ void leitura()
 {
     int fd;
     int tamFile=0;
-
+    int ret;
     char *c; 
     char *ascii;
     
@@ -122,8 +126,12 @@ void leitura()
 
     printf("----------------------------------------------------\n");
     printf("Dado decriptado em hexadecimal: \n");
-	read_crypt(fd,c,tamFile);
- 	printf("%s \n",c);
+	ret = read_crypt(fd,c,tamFile);
+ 	if(IS_ERR(ret)){
+         perror("Falha na descriptografia... ");
+         return errno;
+     }
+    printf("%s \n",c);
 	       
     printf("Dado decriptado em ASCII: \n");
     ascii = malloc(tamFile / 2);

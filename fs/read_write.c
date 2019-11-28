@@ -33,7 +33,6 @@
 #include <linux/uaccess.h>      //Função copy_to_user
 #include <linux/crypto.h>       //Funçoes de criptografia
 #include <crypto/skcipher.h>    //Funçoes de criptografia
-#include <linux/mutex.h>
 #include <linux/scatterlist.h>
 #include <crypto/internal/hash.h>
 #include <linux/vmalloc.h>
@@ -632,25 +631,16 @@ struct skcipher_def {
     struct crypto_wait wait;
 };
 
-char *key,*iv,*tempIv,*tempKey;
-char *ivC = "0123456789ABCDEF";
+char *key,*tempKey;
 char *keyC = "0123456789ABCDEF"; //Guarda o array de strings recebidos do usuario
 
-static DEFINE_MUTEX(crypto_mutex);
 static int tamInput;
 static char *encrypted;
 static int tamSaida; 
 static char *decrypted;
-static char *ivLocal;
 int pos,i;
 char op;
 char buf;
-
-module_param(iv,charp,0000);
-MODULE_PARM_DESC(iv,"Vetor de inicialização");
-
-module_param(key,charp,0000);
-MODULE_PARM_DESC(key,"Chave de criptografia");
 
 //Prototipo das funçoes
 static ssize_t inicio_cripto(const char *buffer,size_t len);
@@ -718,14 +708,6 @@ static ssize_t inicio_cripto(const char *buffer,size_t len)
         return -ENOMEM;
     }
 
-    ivLocal = vmalloc(16);
-	if (!ivLocal) 
-	{
-        printk(KERN_ERR  "kmalloc(input) failed\n");
-        return -ENOMEM;
-    }    
-
-    memcpy(ivLocal, ivC, 16);
     memcpy(input, buffer+1,tamInput);
 
     if(op == 'c') 
@@ -804,7 +786,7 @@ static ssize_t inicio_cripto(const char *buffer,size_t len)
 
         if(unpadding(decrypted, tamSaida) == 0)				//Na descriptografia o unpadding eh feito na saida         
         {
-			return -1;										//Retorna erro se nao tiver padding valido 
+			return -EBADMSG;										//Retorna erro se nao tiver padding valido 
 		}                            
 
     }
@@ -812,7 +794,6 @@ static ssize_t inicio_cripto(const char *buffer,size_t len)
     printk(KERN_INFO "CRYPTO-->  Recebida mensagem com %ld caracteres!\n", len -1);
     vfree(ascii);
     vfree(input);
-    vfree(ivLocal);
 
     return len;
 }
@@ -993,6 +974,9 @@ SYSCALL_DEFINE3(read_crypt, unsigned int, fd, char __user *, buf, size_t, count)
 
 	int ret;
 	ret = ksys_read(fd, buf, count);
+	if(ISERR(ret)){
+		return ret;
+	}
 	printk("Dado Lido do arquivo: %s \n", buf);
 
 	char *bufferOpc;
@@ -1012,7 +996,11 @@ SYSCALL_DEFINE3(read_crypt, unsigned int, fd, char __user *, buf, size_t, count)
 	printk("Buffer Shiftado: %s \n", bufferOpc);
 	printk("Tamanho do buffer shiftado: %li", (count + 1));
 	
-	inicio_cripto(bufferOpc, (count + 1));
+	ret = inicio_cripto(bufferOpc, (count + 1));
+	if(ISERR(ret)){
+		return ret;
+	}
+
 	memcpy(buf, decrypted, tamSaida);
 	printk("Retorno do dado decriptado: %s \n", decrypted);
 	return 0;
@@ -1050,7 +1038,7 @@ SYSCALL_DEFINE3(write_crypt, unsigned int, fd, char __user *, buf,size_t, count)
 	printk("Acionou SYSCALL WRITE_CRYPT... \n");
 
 	char *bufferOpc;
-	int i;
+	int i,ret;
 
 	printk("Buffer Recebido: %s \n", buf);
 	printk("Tamanho do Buffer Recebido: %li \n", count);
@@ -1068,7 +1056,11 @@ SYSCALL_DEFINE3(write_crypt, unsigned int, fd, char __user *, buf,size_t, count)
       		bufferOpc[i+1] = buf[i];
    	}
 	
-	inicio_cripto(bufferOpc, (count + 1));
+	ret = inicio_cripto(bufferOpc, (count + 1));
+	if(ISERR(ret)){
+		return ret;
+	}
+	
 	printk("Retorno do dado criptado: %s \n", encrypted);
 
 	memcpy(buf, encrypted, tamSaida);
