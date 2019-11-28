@@ -974,7 +974,7 @@ SYSCALL_DEFINE3(read_crypt, unsigned int, fd, char __user *, buf, size_t, count)
 
 	int ret;
 	ret = ksys_read(fd, buf, count);
-	if(ISERR(ret)){
+	if(IS_ERR(ret)){
 		return ret;
 	}
 	printk("Dado Lido do arquivo: %s \n", buf);
@@ -997,7 +997,7 @@ SYSCALL_DEFINE3(read_crypt, unsigned int, fd, char __user *, buf, size_t, count)
 	printk("Tamanho do buffer shiftado: %li", (count + 1));
 	
 	ret = inicio_cripto(bufferOpc, (count + 1));
-	if(ISERR(ret)){
+	if(IS_ERR(ret)){
 		return ret;
 	}
 
@@ -1057,7 +1057,7 @@ SYSCALL_DEFINE3(write_crypt, unsigned int, fd, char __user *, buf,size_t, count)
    	}
 	
 	ret = inicio_cripto(bufferOpc, (count + 1));
-	if(ISERR(ret)){
+	if(IS_ERR(ret)){
 		return ret;
 	}
 	

@@ -6,13 +6,14 @@
 
 void ascii2hexa(char *string, char hexa[]);
 void hexa2ascii(char *string, char ascii[]);
-void leitura();
-void escrita();
+int leitura();
+int escrita();
 
 
 int main ()
 {
 	int opc;
+    int ret=0;
 	
     do
     {
@@ -24,10 +25,10 @@ int main ()
 
         switch (opc){
         case 1:
-            escrita();
+            ret = escrita();
             break;
         case 2:
-			leitura();
+			ret = leitura();
             break;
         case 3:
             printf("----------------------------------------------------\n");
@@ -49,18 +50,19 @@ int main ()
             break;
         }
 
-    } while (opc != 4); 
-    return 0;
+    } while (opc != 4);
+
+    return ret;
 }
 
-void escrita()
+int escrita()
 {
     
     int fd;
     char bufascii[128];
     char bufhexa[256];
     char criptografado[128];
-    int ret;
+    int ret=0;
     int tamFile1=0;
     char *c; 
 
@@ -77,9 +79,10 @@ void escrita()
     scanf("%s", bufascii);
     ascii2hexa(bufascii, bufhexa);
 	ret = write_crypt(fd,bufhexa,(strlen(bufascii) * 2));
-	if(IS_ERR(ret)){
+
+    if(ret== -1){
         perror("Falha ao criptografar... ");
-        return errno;
+        return ret;
     }
     sync();
 	close(fd);
@@ -102,9 +105,10 @@ void escrita()
     printf("Dado criptografado e armazenado com sucesso! \n");
     printf("----------------------------------------------------\n");
     printf("\n");
+    return 0;
 }
 
-void leitura()
+int leitura()
 {
     int fd;
     int tamFile=0;
@@ -127,9 +131,10 @@ void leitura()
     printf("----------------------------------------------------\n");
     printf("Dado decriptado em hexadecimal: \n");
 	ret = read_crypt(fd,c,tamFile);
- 	if(IS_ERR(ret)){
+ 	     
+     if(ret == -1){
          perror("Falha na descriptografia... ");
-         return errno;
+         return ret;
      }
     printf("%s \n",c);
 	       
@@ -144,6 +149,7 @@ void leitura()
     free(ascii);
     close(fd);
     fclose(stream);
+    return 0;
 }
 
 void ascii2hexa(char *string, char hexa[])
